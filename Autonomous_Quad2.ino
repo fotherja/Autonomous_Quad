@@ -6,7 +6,6 @@
  * 
  * To Do:
  *  - improve PPM reading resolution from 4us to 1us. Use timer2
- *  - Ensure there is a delay to allow sonar to point to ground before ultrasonic sensor is used.
  *  
  * James Fotherby - 2/1/2017, 29/1/2017
  * 
@@ -16,24 +15,27 @@
 
 //------------------------------------------------------------------------------------
 void setup() {
+  // Configure pins, interrupts and the serial port:
   pinMode(PPM_In_Pin, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PPM_In_Pin), Interrupt_Fxn, CHANGE);
 
   pinMode(PPM_Out_Pin, OUTPUT);
   digitalWrite(PPM_Out_Pin, HIGH);  
 
-  Wire.begin();
   Serial.begin(115200);  
   
-  for (int i=0; i<PPM_CHANNELS; i++){                                                 // initiallize default PPM values
-    PPM[i]= 1500;
+
+  // Initiallize default PPM values:
+  for (int i=0; i<PPM_CHANNELS; i++){                                                 
+    PPM_Out[i]= 1500;
   }
-  PPM[THROTTLE_CH]= 1000;
-  PPM[SWITCH_CH]= 1000;
+  PPM_Out[THROTTLE_CH]= 1000;
+  PPM_Out[SWITCH_CH]= 1000;
   
-  TCCR1A = 0; 
-  TCCR1B = 0;
-  
+
+  // Configure Timer1 for use as a timer for CPPM receiving:  
+  TCCR1A = 0;                                                                                        
+  TCCR1B = 0;  
   OCR1A = 100;                                                                        // compare match register, change this
   TCCR1B |= (1 << WGM12);                                                             // turn on CTC mode
   TCCR1B |= (1 << CS11);                                                              // 8 prescaler: 0,5 microseconds at 16mhz
@@ -42,9 +44,8 @@ void setup() {
 
 //------------------------------------------------------------------------------------
 void loop() 
-{ 
-  
-  if(PPM_Channel.Ch[SWITCH_CH] < CENTRE_PULSEWIDTH)                                   // Perform CPPM Pass through
+{   
+  if(PPM_In.Ch[SWITCH_CH] < CENTRE_PULSEWIDTH)                                        // Perform CPPM Pass through
   {
     Iterate_Manual_Mode();
   }  
@@ -58,7 +59,7 @@ void loop()
 void Iterate_Manual_Mode()
 {    
     for (int i = 0; i < PPM_CHANNELS; i++){                                            
-      PPM[i]= constrain(PPM_Channel.Ch[i], 1000, 2000);
+      PPM_Out[i]= constrain(PPM_In.Ch[i], 1000, 2000);
     } 
 
     delay(10);
@@ -68,13 +69,17 @@ void Iterate_Manual_Mode()
 void Iterate_Auto_Mode()
 {    
     for (int i = 0; i < PPM_CHANNELS; i++){                                           // 1) Copy Reciver CPPM pulsewidths to a non volitile memory location                                         
-      PPM_Channel.Ch_Copy[i]= PPM_Channel.Ch[i];
+      PPM_In.Ch_Copy[i]= PPM_In.Ch[i];
     }
     
-    PPM_Channel.Ch_Copy[AUX_CH] = 1912;                                               // 2) Ensure the sonar is facing at the ground
+    PPM_In.Ch_Copy[AUX_CH] = 1912;                                                    // 2) Ensure the sonar is facing at the ground
+
+    // ##########################################################
+    // Perform control stuff here depending on info from Pi3 etc.
+    // ##########################################################
     
     for (int i = 0; i < PPM_CHANNELS; i++){                                           // 3) Write the non volitile, adjusted channels for PPM output to flight controller                            
-      PPM[i]= constrain(PPM_Channel.Ch_Copy[i], 1000, 2000);
+      PPM_Out[i]= constrain(PPM_In.Ch_Copy[i], 1000, 2000);
     }
 }
 
@@ -83,10 +88,8 @@ void Print_PPM_Channel_Values()
 {
   for(int i = 0;i < PPM_CHANNELS;i++)  {
     Serial.print("Ch "); Serial.print(i+1);  
-    Serial.print(": ");  Serial.println(PPM_Channel.Ch[i]);    
+    Serial.print(": ");  Serial.println(PPM_In.Ch[i]);    
   }
-
-  Serial.println();
 }
 
 
@@ -116,7 +119,7 @@ void Interrupt_Fxn ()
     else
     {
       Pulses_Remaining--;
-      PPM_Channel.Ch[(PPM_CHANNELS - 1) - Pulses_Remaining] = Time_at_Start_of_Interrupt - Time + 400;
+      PPM_In.Ch[(PPM_CHANNELS - 1) - Pulses_Remaining] = Time_at_Start_of_Interrupt - Time + 400;
     }
   } 
     
@@ -155,8 +158,8 @@ ISR(TIMER1_COMPA_vect)
       calc_rest = 0;
     }
     else  {
-      OCR1A = (PPM[cur_chan_numb] - PULSE_LENGTH) * 2;
-      calc_rest += PPM[cur_chan_numb];
+      OCR1A = (PPM_Out[cur_chan_numb] - PULSE_LENGTH) * 2;
+      calc_rest += PPM_Out[cur_chan_numb];
       cur_chan_numb++;
     }     
   }

@@ -26,9 +26,9 @@ void Iterate_Auto_Mode();
 static struct {                                                                       // Store for PPM Pulsewidths
   volatile int Ch[PPM_CHANNELS];
   int Ch_Copy[PPM_CHANNELS];
-} PPM_Channel;
+} PPM_In;
 
-int PPM[PPM_CHANNELS];
+int PPM_Out[PPM_CHANNELS];
 
 
 
