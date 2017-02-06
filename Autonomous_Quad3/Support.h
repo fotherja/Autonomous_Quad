@@ -1,12 +1,16 @@
 // DEFINITIONS:
-#define           PPM_CHANNELS            8 
+#define           PPM_CHANNELS            8
+#define           PPM_CHS_EXCLUDING_GIM   PPM_CHANNELS - 1 
 
 #define           PITCH_CH                0
 #define           ROLL_CH                 1
 #define           THROTTLE_CH             2
 #define           YAW_CH                  3
-#define           AUX_CH                  4
+#define           ARM_CH                  4
 #define           SWITCH_CH               5
+
+#define           AUX_CH                  6
+#define           GIMBAL_CH               7
 
 #define           MANUAL_PULSEWIDTH       1750
 #define           FRAME_LENGTH            20000                                       // Set the PPM frame length in microseconds (1ms = 1000µs)
@@ -25,7 +29,7 @@ void Iterate_Auto_Mode();
 // GLOBALS:
 static struct {                                                                       // Store for PPM Pulsewidths
   volatile int Ch[PPM_CHANNELS];
-  int Ch_Copy[PPM_CHANNELS];
+  int Ch_Modify[PPM_CHANNELS];
 } PPM_In;
 
 int PPM_Out[PPM_CHANNELS];
