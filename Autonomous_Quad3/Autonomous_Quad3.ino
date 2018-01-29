@@ -1,16 +1,20 @@
 /*
  * This program receives CPPM from a RF receiver and passes it through to the flight controller.
  * 
- * In future, the aim is to communicate with the RPi3 which will provide serial information for pitch, roll and yaw to follow a line using 
- * a gimbal mounted camera.
+ * If channel 6 is > 1750us, auto mode is entered: Received serial data (from the RPi3) is put
+ * through PID loops. The outputs from these PIDs modifies the yaw and roll values slightly. The
+ * user still has most of the control however.
+ * 
+ * A Gimbal channel is set on initatiation to 1912us which happens to be the value which points it
+ * vertically downwards.
  * 
  * To Do:
  *  - improve PPM reading resolution from 4us to 1us. 
- *  
- * 
+ *  - Tune X & Y PIDs
  */
 
 #include <PID_v1.h>
+#include "Average.h"
 #include "Support.h"
 
 //------------------------------------------------------------------------------------
@@ -23,7 +27,6 @@ void setup() {
   digitalWrite(PPM_Out_Pin, HIGH);  
 
   Serial.begin(115200); 
-    
 
   // Initiallize default PPM values:
   PPM_Out[PITCH_CH]     = 1500;
@@ -44,38 +47,40 @@ void setup() {
   TIMSK1 |= (1 << OCIE1A);                                                            // enable timer compare interrupt
 
   // Configure PID Stuff
-  X_Dev_Setpoint = 0.0;
+  X_Dev_Setpoint = 25.0;
   X_Dev_PID.SetMode(MANUAL);
-  X_Dev_PID.SetOutputLimits(-100.0, 100.0);
+  X_Dev_PID.SetOutputLimits(-200.0, 200.0);
   X_Dev_PID.SetSampleTime(100);
 
   Y_Dev_Setpoint = 0.0;
   Y_Dev_PID.SetMode(MANUAL);
-  Y_Dev_PID.SetOutputLimits(-100.0, 100.0);
+  Y_Dev_PID.SetOutputLimits(-150.0, 150.0);
   Y_Dev_PID.SetSampleTime(100);
 }
 
 //------------------------------------------------------------------------------------
 void loop() 
 {   
-  if(PPM_In.Ch[SWITCH_CH] < MANUAL_PULSEWIDTH)                                        // Perform CPPM Pass through
-  {
-    Iterate_Manual_Mode();
-  }  
-  else                                                                                // Allow Channels to be slightly adjusted based commands from Pi
+  if(PPM_In.Ch[SWITCH_CH] > MANUAL_PULSEWIDTH and Serial_Rx_Timeout > millis())       // Allow Channels to be slightly adjusted based commands from Pi
   {
     Iterate_Auto_Mode();
+  }  
+  else                                                                                // Perform CPPM Pass through
+  {
+    Iterate_Manual_Mode();
   }
-}
+}                                                                                     // Serial_Event is run after each loop
 
 //------------------------------------------------------------------------------------
 void Iterate_Manual_Mode()
 {    
   X_Dev_PID.SetMode(MANUAL);                                                          // Ensure PIDs are in Manual mode
-  Y_Dev_PID.SetMode(MANUAL);  
+  Y_Dev_PID.SetMode(MANUAL);
+  X_Dev_Output = 0.0;
+  Y_Dev_Output = 0.0;    
 
-  for (int i = 0; i < PPM_CHS_EXCLUDING_GIM; i++){                                            
-    PPM_Out[i]= constrain(PPM_In.Ch[i], 1000, 2000);
+  for (byte i = 0; i < PPM_CHS_EXCLUDING_GIM; i++){                                   // Copy CPPM from receiver directly across to CPPM output to FC                                         
+    PPM_Out[i]= constrain(PPM_In.Ch[i], 950, 2050);
   }
 }
 
@@ -84,68 +89,66 @@ void Iterate_Auto_Mode()
 {
   X_Dev_PID.SetMode(AUTOMATIC);                                                       // Ensure PIDs are in Auto mode
   Y_Dev_PID.SetMode(AUTOMATIC);
-  
-  for (int i = 0; i < PPM_CHS_EXCLUDING_GIM; i++){                                    // Copy Reciver CPPM pulsewidths to a non volitile memory location                                         
-    PPM_In.Ch_Modify[i]= PPM_In.Ch[i];
+
+  for (byte i = 0; i < PPM_CHS_EXCLUDING_GIM; i++){                                   // Copy Reciver CPPM pulsewidths to a non volitile memory location                                         
+    PPM_In.Ch_Modify[i] = PPM_In.Ch[i];
   }  
 
-  X_Dev_PID.Compute();                                                                                                                            
+  //Pitch_Forward();                                                                  // Apply a small pitch forward. Or just trim this in using tx...
+
+  X_Dev_PID.Compute();                                                                // Run the PID loop (if enough time has elapsed)                                                                                                                          
   Y_Dev_PID.Compute();
 
-  PPM_In.Ch_Modify[ROLL_CH] += (int)X_Dev_Output;
+  PPM_In.Ch_Modify[ROLL_CH] += (int)X_Dev_Output;                                     // Here we modify the Yaw and Roll channels based on PID output
   PPM_In.Ch_Modify[YAW_CH] += (int)Y_Dev_Output;   
   
-  for (int i = 0; i < PPM_CHS_EXCLUDING_GIM; i++){                                    // Write the non volitile, adjusted channels for PPM output to flight controller                            
-    PPM_Out[i]= constrain(PPM_In.Ch_Modify[i], 1000, 2000);
+  for (byte i = 0; i < PPM_CHS_EXCLUDING_GIM; i++){                                   // Write the adjusted channels for CPPM output to FC                            
+    PPM_Out[i]= constrain(PPM_In.Ch_Modify[i], 950, 2050);
   }
 }
 
 //------------------------------------------------------------------------------------
-void Print_PPM_Channel_Values()
+void Pitch_Forward()                                                                  // Apply a little forward pitch every so often...
 {
-  for(int i = 0;i < PPM_CHANNELS;i++)  {
-    Serial.print("Ch "); Serial.print(i+1);  
-    Serial.print(": ");  Serial.println(PPM_In.Ch[i]);    
-  }
+  PPM_In.Ch_Modify[PITCH_CH] += 25;
 }
 
 //------------------------------------------------------------------------------------
-void serialEvent() {                // 255, X, Y
+void serialEvent() {                                                                  // Receive Packets (255 X_error Y_error) over serial
   static byte Char_Count = 5;
-
+  
   while (Serial.available() > 0)
-  {
+  {   
     byte inChar = 0;
-
-    //Read in the first byte
-    if (Char_Count >= 2) {
-      inChar = Serial.read();
-      if (inChar == 255)
-        Char_Count = 0;
-    } 
     
-    else {
+    if (Char_Count >= 2) {                                                            // Read in the first byte
+      inChar = Serial.read();
+      if (inChar == 255)  {
+        Char_Count = 0;
+      }
+    }     
+    else 
+    {
       switch (Char_Count) {
-        case 0: // Read in the X Value
+        case 0:                                                                       // Read in the X Value
           Serial_X = Serial.read();
           Char_Count++;
           break;
 
-        case 1: // Read in the Y Value
+        case 1:                                                                       // Read in the Y Value
           Serial_Y = Serial.read();
           Char_Count++;
-          X_Dev_Input = ((double)Serial_X) - 127.0;
+          X_Dev_Input = ((double)Serial_X) - 127.0;                                   // COULD ADD A SIMPLE AVERGAE FILTER HERE
           Y_Dev_Input = ((double)Serial_Y) - 127.0;
+          Serial_Rx_Timeout = millis() + SERIAL_TIMEOUT;                              // Update the Serial time out variable
           break;
 
-        default: // Shouldn't get here discard that byte
-          // do nothing
+        default:                                                                      // Shouldn't get here          
           break;
       }
     }
   }
 }
-
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------------------
 //#### Interrupts #####################################################################################################################################################
@@ -155,11 +158,11 @@ void Interrupt_Fxn ()
   // Detects start of pulse chain by ignoring pin changes until no rising edge for 5 milliseconds
   // Then it reads each of the pulse widths and overwrites to PPM_Channel struct         
   static unsigned long Time, Time_of_Previous_Pin_Change;
-  static int Pulses_Remaining = 0;
-
+  static char Pulses_Remaining = 0;
 
   unsigned long Time_at_Start_of_Interrupt = micros();
-  char state = digitalRead(PPM_In_Pin);  
+  char state = PPM_PIN_STATE;
+    
   unsigned long Time_Difference = Time_at_Start_of_Interrupt - Time_of_Previous_Pin_Change;
  
   if(Pulses_Remaining && Time_Difference < 3000)
@@ -171,10 +174,10 @@ void Interrupt_Fxn ()
     else
     {
       Pulses_Remaining--;
-      PPM_In.Ch[(PPM_CHANNELS - 1) - Pulses_Remaining] = Time_at_Start_of_Interrupt - Time + 400;
+      PPM_In.Ch[PPM_CHS_EXCLUDING_GIM - Pulses_Remaining] = Time_at_Start_of_Interrupt - Time + 400;
     }
   } 
-    
+       
   else if(Time_Difference > 5000)
   {     
     Pulses_Remaining = PPM_CHANNELS;
@@ -192,7 +195,7 @@ ISR(TIMER1_COMPA_vect)
   TCNT1 = 0;
   
   if (state) {                                                                        // start pulse
-    digitalWrite(PPM_Out_Pin, LOW);
+    PPM_OUT_LOW;
     OCR1A = PULSE_LENGTH * 2;                                                         // Need *2 since the timer ticks every 0.5ms. (There's no prescaler setting allowing ticks every 1ms)
     state = false;
   } 
@@ -200,7 +203,7 @@ ISR(TIMER1_COMPA_vect)
     static byte cur_chan_numb = 0;
     static unsigned int calc_rest = 0;
   
-    digitalWrite(PPM_Out_Pin, HIGH);
+    PPM_OUT_HIGH;
     state = true;
 
     if(cur_chan_numb >= PPM_CHANNELS){
